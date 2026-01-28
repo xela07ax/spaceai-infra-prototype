@@ -1,0 +1,14 @@
+# Binaries
+bin/
+uag-engine
+console-api
+
+# Tooling
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# Go
+vendor/

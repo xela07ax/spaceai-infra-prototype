@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package connector.v1;
+
+option go_package = "github.com/xela07ax/spaceai-infra-prototype/pkg/api/connector/v1";
+
+import "google/protobuf/struct.proto";
+
+service ConnectorService {
+  // Выполнить действие (Capability)
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+
+  // Получить список поддерживаемых действий
+  rpc GetCapabilities(GetCapabilitiesRequest) returns (GetCapabilitiesResponse);
+}
+
+message ExecuteRequest {
+  string capability_id = 1;      // e.g. "github.create_issue"
+  google.protobuf.Struct payload = 2; // Динамические данные (JSON-like)
+  map<string, string> metadata = 3;   // TraceID, UserID, SessionID
+}
+
+message ExecuteResponse {
+  int32 status_code = 1;              // 0 - success, >0 - error codes
+  google.protobuf.Struct result = 2;
+  string error_message = 3;
+}
+
+message GetCapabilitiesRequest {}
+
+message GetCapabilitiesResponse {
+  repeated Capability capabilities = 1;
+}
+
+message Capability {
+  string id = 1;
+  string description = 2;
+  google.protobuf.Struct input_schema = 3; // Схема в формате JSON Schema
+}
