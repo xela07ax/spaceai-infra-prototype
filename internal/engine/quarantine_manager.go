@@ -1,70 +1,69 @@
 package engine
 
 import (
-	"github.com/redis/go-redis/v9"
-
 	"context"
+	"fmt"
 	"sync"
+
+	"github.com/redis/go-redis/v9"
+	"github.com/xela07ax/spaceai-infra-prototype/internal/infra"
+	"go.uber.org/zap"
 )
 
+type QuarantineProvider interface {
+	GetQuarantineAgents(ctx context.Context) ([]string, error)
+}
+
 type QuarantineManager struct {
-	mu               sync.RWMutex
-	quarantineAgents map[string]struct{}
-	rdb              *redis.Client
+	repo           QuarantineProvider
+	rdb            *redis.Client
+	logger         *zap.Logger
+	mu             sync.RWMutex
+	quarantineCash map[string]bool
 }
 
-func NewQuarantineManager(rdb *redis.Client) *QuarantineManager {
+func NewQuarantineManager(rdb *redis.Client, repo QuarantineProvider, logger *zap.Logger) *QuarantineManager {
 	return &QuarantineManager{
-		quarantineAgents: make(map[string]struct{}),
-		rdb:              rdb,
+		quarantineCash: make(map[string]bool),
+		repo:           repo,
+		rdb:            rdb,
 	}
 }
 
-// Init загружает состояние всех "песочных" агентов при старте UAG
-func (m *QuarantineManager) Init(ctx context.Context) error {
-	agents, err := m.rdb.SMembers(ctx, "devit:agents:sandbox_set").Result()
+func (qm *QuarantineManager) Init(ctx context.Context) error {
+	ids, err := qm.repo.GetQuarantineAgents(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to fetch quarantine agents from DB: %w", err)
 	}
 
-	m.mu.Lock()
-	for _, id := range agents {
-		m.quarantineAgents[id] = struct{}{}
-	}
-	m.mu.Unlock()
-	return nil
+	return WarmupState(ctx, qm.rdb, qm.logger, ids, infra.RedisKeyQuarantineAgents, infra.RedisKeyLockBlockedQuarantine, func(items []string) {
+		qm.mu.Lock()
+		defer qm.mu.Unlock()
+		for _, id := range items {
+			qm.quarantineCash[id] = true
+		}
+	})
 }
 
-// StartListener подписывается на изменения режима Sandbox в реальном времени
-func (m *QuarantineManager) StartListener(ctx context.Context) {
-	pubsub := m.rdb.Subscribe(ctx, "devit:agents:sandbox-signal")
-	ch := pubsub.Channel()
-
-	for msg := range ch {
-		// Ожидаем формат сообщения "agentID:on" или "agentID:off"
-		m.processSignal(msg.Payload)
-	}
-}
-
-func (m *QuarantineManager) processSignal(payload string) {
-	// Простая логика парсинга сигнала
-	// В проде лучше использовать JSON или Protobuf
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if len(payload) > 3 && payload[len(payload)-3:] == ":on" {
-		id := payload[:len(payload)-3]
-		m.quarantineAgents[id] = struct{}{}
-	} else if len(payload) > 4 && payload[len(payload)-4:] == ":off" {
-		id := payload[:len(payload)-4]
-		delete(m.quarantineAgents, id)
-	}
+func (qm *QuarantineManager) StartListener(ctx context.Context) {
+	ListenStateResilient(ctx, qm.rdb, qm.logger, infra.RedisChanQuarantine,
+		func() error { return qm.Init(ctx) }, // Переподключение
+		func(id string, status bool) { // Обработка сообщения
+			qm.mu.Lock()
+			defer qm.mu.Unlock()
+			if status {
+				qm.quarantineCash[id] = true
+			} else {
+				delete(qm.quarantineCash, id)
+			}
+		},
+	)
 }
 
 // IsQuarantined — Ручной контроль при подозрении
-func (m *QuarantineManager) IsQuarantined(agentID string) bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	_, ok := m.quarantineAgents[agentID]
+func (qm *QuarantineManager) IsQuarantined(agentID string) bool {
+	qm.mu.RLock()
+	defer qm.mu.RUnlock()
+	_, ok := qm.quarantineCash[agentID]
 	return ok
 }

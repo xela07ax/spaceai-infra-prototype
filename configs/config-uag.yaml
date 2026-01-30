@@ -1,0 +1,41 @@
+# SpaceAI UAG Gateway Configuration (Data Plane)
+
+# 1. Сетевой интерфейс шлюза
+server:
+  host: "0.0.0.0"
+  port: 8080
+  read_timeout: "5s"  # Строже, чем в консоли, для защиты от медленных запросов
+  write_timeout: "10s"
+
+# 2. Безопасность (Zero Trust)
+# Шлюз только ПРОВЕРЯЕТ токены, поэтому приватный ключ ему не нужен
+auth:
+  public_key_path: "./certs/public.pem"
+
+# 3. Инфраструктура
+database:
+  url: "postgres://user:password@localhost:5432/spaceai?sslmode=disable"
+  max_conns: 50 # Больше коннектов для параллельной записи аудита
+  min_conns: 10
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+# 4. Настройки подсистем (Resilience & Perf)
+engine:
+  # Настройки асинхронного воркера аудита
+  audit_buffer_size: 5000 # Размер канала перед сбросом в БД
+  audit_flush_interval: "2s"
+
+  # Настройки Circuit Breaker для коннекторов
+  circuit_breaker:
+    max_requests: 5
+    interval: "10s"
+    timeout: "30s"
+
+# 5. Логирование (Highload optimized)
+logger:
+  level: "warn" # В проде ставим warn, чтобы не тратить CPU на лишние логи
+  format: "json"

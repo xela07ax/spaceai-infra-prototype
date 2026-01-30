@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -10,9 +11,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/xela07ax/spaceai-infra-prototype/internal/infra"
+	"github.com/xela07ax/spaceai-infra-prototype/internal/infra/auth"
 	"github.com/xela07ax/spaceai-infra-prototype/internal/repository/postgres"
+	"github.com/xela07ax/spaceai-infra-prototype/internal/risk"
+	"go.uber.org/zap"
 
 	"github.com/xela07ax/spaceai-infra-prototype/internal/audit"
 	"github.com/xela07ax/spaceai-infra-prototype/internal/connectors"
@@ -27,138 +34,181 @@ import (
 )
 
 func main() {
-	// 1. Инфраструктура и ресурсы
-	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-	// Инициализируем Postgres для Аудита
-	dbURL := os.Getenv("DB_URL")
-	if dbURL == "" {
-		log.Fatal("DB_URL environment variable is required")
+	// Загружаем конфиг (умеет читать файлы или ENV в []byte)
+	cfg, err := infra.LoadConfig()
+	if err != nil {
+		log.Fatalf("Config error: %v", err)
 	}
-	auditStorage := postgres.NewAuditRepo(dbURL)
-	// Теперь данные полетят в базу пачками
-	agentFS := audit.NewAgentFS(auditStorage)
 
-	// Настраиваем gRPC соединение с коннектором (например, Jira Connector)
-	// В реальном проде адрес будет из конфига или Service Discovery
+	// Парсим Публичный ключ
+	pubKey, err := auth.ParseRSAPublicKey(cfg.Auth.PublicKey)
+	if err != nil {
+		log.Fatalf("Public Key error: %v", err)
+	}
+
+	logger, err := zap.NewProduction()
+	if err != nil {
+		log.Fatal(fmt.Sprintf("failed to create logger: %v", err))
+	}
+	defer logger.Sync() // Очистка буфера при выходе
+
+	// 1. Инициализация базовых ресурсов (Infrastructure)
+	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+
+	// Контекст приложения живет до сигналов ОС
+	appCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	// Репозиторий на Background контексте (чтобы не отвалился при Shutdown)
+	auditStorage := postgres.NewAgentRepo(context.Background(), cfg)
+	defer auditStorage.Close() // Закрываем пул в самом конце
+
+	// 2. Инициализация Аудита (AgentFS)
+	auditor := audit.NewAgentFS(auditStorage, logger)
+	auditor.Start()      // Запускаем воркера
+	defer auditor.Stop() // Гарантированный flush батча при выходе
+
+	// 3. Коннектор (External Systems)
 	conn, err := grpc.Dial("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("failed to connect to connector: %v", err)
 	}
 	defer conn.Close()
 
-	// Контекст для управления жизненным циклом фоновых горутин
-	// При завершении main() или срабатывании SIGTERM, cancel() остановит слушателей
-	appCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// 4. Control Plane Managers (KillSwitch, Sandbox, Quarantine)
+	ksm := engine.NewKillSwitchManager(rdb, auditStorage, logger)
+	sm := engine.NewSandboxManager(rdb, auditStorage, logger)
+	qm := engine.NewQuarantineManager(rdb, auditStorage, logger)
 
-	// 2. Control Plane (Менеджеры управления)
-	ksm := engine.NewKillSwitchManager(rdb)
-	if err := ksm.Init(appCtx); err != nil {
-		log.Fatalf("Failed to init kill-switch manager: %v", err)
-	}
+	// ВАЖНО: Сначала запускаем Listeners (Subscribe), чтобы не пропустить дельту во время Init
 	go ksm.StartListener(appCtx)
-
-	qm := engine.NewQuarantineManager(rdb)
-	if err := qm.Init(appCtx); err != nil {
-		log.Fatalf("Failed to init quarantine manager: %v", err)
-	}
+	go sm.StartListener(appCtx)
 	go qm.StartListener(appCtx)
 
-	sm := engine.NewSandboxManager(rdb)
-	if err := sm.Init(appCtx); err != nil {
-		log.Fatalf("Failed to init sandbox manager: %v", err)
+	// ТЕПЕРЬ делаем Init (Холодный прогрев из БД)
+	if err := ksm.Init(appCtx); err != nil {
+		log.Fatalf("Kill-switch init failed: %v", err)
 	}
-	go sm.StartListener(appCtx)
+	if err := sm.Init(appCtx); err != nil {
+		log.Fatalf("Sandbox init failed: %v", err)
+	}
+	if err := qm.Init(appCtx); err != nil {
+		log.Fatalf("Quarantine init failed: %v", err)
+	}
 
-	// 3. Execution Layer (Исполнение + Надежность)
-	connectorClient := pb.NewConnectorServiceClient(conn)
-	grpcAdapter := connectors.NewGRPCAdapter(connectorClient)
-	// Оборачиваем в Reliability (Retries, Circuit Breaker)
-	safeExecutor := engine.NewReliabilityWrapper(grpcAdapter)
-
-	// Метрики
-	reg := prometheus.NewRegistry()
-	metrics := engine.NewMetrics(reg)
-
-	// Экспортируем метрики для Prometheus
+	// 5.1. Создаем движок Policy Engine
+	enforcer := policy.NewMemoEnforcer(auditStorage, rdb, logger)
+	// 5.2. Первичный прогрев (Warm-up)
+	if err := enforcer.Refresh(appCtx); err != nil {
+		logger.Fatal("Enforcer warm load policies failed", zap.Error(err))
+	}
+	// 5.3. Запускаем фоновую синхронизацию через Redis Pub/Sub
 	go func() {
-		http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-		log.Fatal(http.ListenAndServe(":9090", nil))
+		pubsub := rdb.Subscribe(appCtx, infra.RedisChanPolicyUpdate)
+		for _ = range pubsub.Channel() {
+			err := enforcer.Refresh(appCtx)
+			if err != nil {
+				logger.Error("Enforcer refresh failed by signal", zap.Error(err))
+			} // Мгновенно обновляем кэш при сигнале из админки
+		}
 	}()
 
-	// 4. Core (Сборка ядра UAG)
-	uag := engine.NewUAGCore(
-		&policy.MemoEnforcer{}, // MVP политика
-		agentFS,
-		safeExecutor,
-		ksm,
-		qm,
-		sm,
-		metrics,
-	)
+	// 6. Execution Layer
+	connectorClient := pb.NewConnectorServiceClient(conn)
+	grpcAdapter := connectors.NewGRPCAdapter(connectorClient)
+	executor := engine.NewReliabilityWrapper(grpcAdapter)
 
-	// 5. HTTP Server
-	// Middleware. Порядок важен: Trace -> KillSwitch -> Sandbox
-	// Цепочка защиты (снизу вверх)
-	endpoint := http.HandlerFunc(uag.HandleHTTPRequest)
+	// Risk Analyzer
+	ra := risk.NewAnalyzer(ksm, logger)
 
-	protectedHandler := engine.TracingMiddleware( // 1. Присваиваем Trace-ID
-		uag.AuthMiddleware( // 2. Проверяем токен и Scopes (ИБ-слой)
-			ksm.Middleware( // 3. Проверяем блокировку (Kill-Switch)
-				sm.Middleware( // 4. Проверяем режим песочницы
-					endpoint, // 5. Исполняем запрос
-				),
-			),
-		),
-	)
+	// 7. Metrics (Prometheus)
+	reg := prometheus.NewRegistry()
+	metrics := engine.NewMetrics(reg)
+	go func() {
+		http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+		log.Printf("Metrics exporter started on :9090")
+		if err := http.ListenAndServe(":9090", nil); err != nil {
+			log.Printf("Metrics server error: %v", err)
+		}
+	}()
 
-	// Регистрируем в роутере
-	mux := http.NewServeMux()
-	mux.Handle("/v1/execute", protectedHandler)
+	// 8. Core Engine & Middleware Chain
+	v := auth.NewBaseValidator(pubKey)
+	uag := engine.NewUAGCore(engine.UAGDeps{
+		Validator:    v,
+		Policy:       enforcer,
+		Auditor:      auditor,
+		Executor:     executor,
+		Approver:     auditStorage,
+		RiskAnalyzer: ra,
+		KillSwitch:   ksm,
+		Quarantine:   qm,
+		Sandbox:      sm,
+		Metrics:      metrics,
+		Redis:        rdb,
+		Logger:       logger,
+	})
 
+	// Роутинг
+	// 1. Создаем универсальный Auth Middleware из пакета infra
+	// uag реализует метод VerifyToken(string) (*domain.CustomClaims, error)
+	authMiddleware := auth.NewMiddleware(uag, logger)
+
+	uagRouter := chi.NewRouter()
+
+	// 2. Инфраструктурный слой
+	uagRouter.Use(engine.TracingMiddleware)
+	uagRouter.Use(middleware.Logger)
+
+	// 3. Слой безопасности (наш конвейер)
+	uagRouter.Group(func(r chi.Router) {
+		r.Use(authMiddleware) // <--- Используем новый из internal/infra/auth
+		r.Use(ksm.Middleware) // Kill-switch
+		r.Use(sm.Middleware)  // Sandbox
+
+		r.Post("/v1/execute", uag.HandleHTTPRequest)
+	})
+
+	// Прикрепляем к основному серверу
 	srv := &http.Server{
 		Addr:    ":8080",
-		Handler: mux,
+		Handler: uagRouter,
 	}
 
-	// Инициализируем gRPC сервер шлюза
 	grpcSrv := grpc.NewServer(grpc.UnaryInterceptor(engine.UnaryAuthInterceptor(uag)))
-	gatewaySrv := engine.NewGRPCGatewayServer(uag)
-	pb.RegisterConnectorServiceServer(grpcSrv, gatewaySrv)
+	pb.RegisterConnectorServiceServer(grpcSrv, engine.NewGRPCGatewayServer(uag))
 
-	// Запускаем gRPC в отдельной горутине
 	go func() {
 		lis, err := net.Listen("tcp", ":50052")
 		if err != nil {
-			log.Fatalf("failed to listen gRPC: %v", err)
+			log.Fatalf("gRPC listen error: %v", err)
 		}
 		log.Printf("UAG gRPC Server started on :50052")
-		if err := grpcSrv.Serve(lis); err != nil {
-			log.Fatalf("failed to serve gRPC: %v", err)
-		}
+		grpcSrv.Serve(lis)
 	}()
-
-	// 6. Graceful Shutdown
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("UAG Engine started on %s", srv.Addr)
+		log.Printf("UAG HTTP Engine started on %s", srv.Addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("listen: %s\n", err)
+			log.Fatalf("HTTP listen error: %s", err)
 		}
 	}()
 
-	<-stop // Ждем сигнал
-	log.Print("UAG Engine stopping...")
+	// 10. Graceful Shutdown (The Master Sequence)
+	<-appCtx.Done()
+	log.Print("UAG Engine shutting down...")
 
-	// Даем 5 секунд на завершение запросов
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer shutdownCancel()
+	// Тайм-аут на закрытие серверов
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("Server Shutdown Failed: %+v", err)
-	}
 	grpcSrv.GracefulStop()
-	log.Print("UAG Engine exited properly")
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("HTTP Server Shutdown Failed: %v", err)
+	}
+
+	// ВАЖНО: Аудитор стопается ПОСЛЕ серверов, чтобы слить последние логи
+	auditor.Stop()
+
+	log.Print("UAG Engine exited gracefully")
 }

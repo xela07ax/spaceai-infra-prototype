@@ -15,12 +15,12 @@ import (
 )
 
 type ReliabilityWrapper struct {
-	next    ExecutionProvider
+	next    ActionExecutor
 	cb      *gobreaker.CircuitBreaker
 	limiter *rate.Limiter
 }
 
-func NewReliabilityWrapper(next ExecutionProvider) *ReliabilityWrapper {
+func NewReliabilityWrapper(next ActionExecutor) *ReliabilityWrapper {
 	// Настройка предохранителя
 	cb := gobreaker.NewCircuitBreaker(gobreaker.Settings{
 		Name:        "uag-connector",

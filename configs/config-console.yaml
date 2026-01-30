@@ -1,0 +1,41 @@
+# SpaceAI Console API Configuration
+
+# 1. Сетевые настройки
+server:
+  host: "0.0.0.0"
+  port: 8081
+  read_timeout: "10s"
+  write_timeout: "30s" # Запас для тяжелых CTE-запросов аналитики
+
+# 2. База данных (Источник правды)
+database:
+  url: "postgres://user:password@localhost:5432/spaceai?sslmode=disable"
+  max_conns: 20
+  min_conns: 5
+
+# 3. Транспорт сигналов (Redis Pub/Sub)
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+# 4. Безопасность (Identity & Access Management)
+# Используем RS256: Консоль ПОДПИСЫВАЕТ токены приватным ключом
+auth:
+  # Публичный ключ для AuthMiddleware (проверка)
+  public_key_path: "./certs/public.pem"
+  # Приватный ключ для AuthService (выдача/подпись)
+  private_key_path: "./certs/private.pem"
+  token_ttl: "24h"
+  bcrypt_cost: 10 # Баланс между безопасностью и нагрузкой на CPU
+
+# 5. Наблюдаемость (Observability)
+logger:
+  level: "info" # debug, info, warn, error
+  format: "json" # json для прода, console для локальной разработки
+  add_caller: true
+
+# 6. Бизнес-логика (Defaults)
+defaults:
+  page_size: 50
+  audit_retention_days: 90

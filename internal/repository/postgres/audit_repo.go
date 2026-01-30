@@ -1,35 +1,24 @@
 package postgres
 
+/*
+Файл audit_repo.go реализует компонент AgentFS (Audit Trail) для аналитического слоя.
+Спроектирован для работы в условиях высокой интенсивности записи событий.
+*/
+
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/xela07ax/spaceai-infra-prototype/internal/audit"
-	"log"
 	"strings"
-	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib" // Драйвер Postgres
+	"github.com/xela07ax/spaceai-infra-prototype/internal/audit"
 )
 
-type AuditRepo struct {
-	db *sql.DB
-}
-
-func NewAuditRepo(connString string) *AuditRepo {
-	db, err := sql.Open("pgx", connString)
-	if err != nil {
-		// В main мы проверим соединение через Ping
-		log.Fatal(err)
-	}
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(25)
-	db.SetConnMaxLifetime(5 * time.Minute)
-	return &AuditRepo{db: db}
-}
-
-func (r *AuditRepo) WriteBatch(ctx context.Context, events []audit.AuditEvent) error {
+// WriteBatch выполняет атомарную пакетную вставку (Bulk Insert) накопленных логов.
+// - Использование JSONB: обеспечивает гибкую схему хранения payload и ответов агентов.
+// - Оптимизация: реализация минимизирует количество транзакций к БД за счет группировки
+// событий, что критично для Hot Path обработки запросов в шлюзе UAG.
+func (r *AgentRepo) WriteBatch(ctx context.Context, events []audit.AuditEvent) error {
 	if len(events) == 0 {
 		return nil
 	}
@@ -60,6 +49,6 @@ func (r *AuditRepo) WriteBatch(ctx context.Context, events []audit.AuditEvent) e
 		strings.TrimSuffix(placeholderStr, ","),
 	)
 
-	_, err := r.db.ExecContext(ctx, query, vals...)
+	_, err := r.pool.Exec(ctx, query, vals...)
 	return err
 }

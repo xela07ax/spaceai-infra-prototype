@@ -12,3 +12,5 @@ console-api
 
 # Go
 vendor/
+
+certs/*.pem

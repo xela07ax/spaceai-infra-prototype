@@ -12,7 +12,7 @@ import (
 )
 
 type ProtectedConnector struct {
-	next    ExecutionProvider
+	next    ActionExecutor
 	limiter *rate.Limiter
 	cb      *gobreaker.CircuitBreaker
 }
@@ -66,7 +66,7 @@ func (p *ProtectedConnector) Call(ctx context.Context, capID string, payload []b
 }
 
 // Middleware Интегрируем проверку блокировки Агента в HTTP-пайплайн шлюза.
-func (m *KillSwitchManager) Middleware(next http.Handler) http.Handler {
+func (ksm *KillSwitchManager) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Достаем ID агента (например, из заголовка или контекста после Auth)
 		agentID := r.Header.Get("X-DevIT-Agent-ID")
@@ -75,7 +75,7 @@ func (m *KillSwitchManager) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		if m.IsBlocked(agentID) {
+		if ksm.IsBlocked(agentID) {
 			// Важно: логируем попытку доступа заблокированного агента
 			log.Printf("Intercepted blocked agent request: %s", agentID)
 
@@ -89,11 +89,11 @@ func (m *KillSwitchManager) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-func (m *SandboxManager) Middleware(next http.Handler) http.Handler {
+func (sm *SandboxManager) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		agentID := r.Header.Get("X-Agent-ID")
 		ctx := r.Context()
-		if m.IsSandbox(agentID) {
+		if sm.IsSandbox(agentID) {
 			ctx = context.WithValue(ctx, "is_sandbox", true)
 			w.Header().Set("X-DevIT-Mode", "Sandbox")
 		}

@@ -28,7 +28,7 @@ type CreatePolicyRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	AgentId       string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
 	CapabilityId  string                 `protobuf:"bytes,2,opt,name=capability_id,json=capabilityId,proto3" json:"capability_id,omitempty"`
-	Constraints   *structpb.Struct       `protobuf:"bytes,3,opt,name=constraints,proto3" json:"constraints,omitempty"`
+	Conditions    *structpb.Struct       `protobuf:"bytes,3,opt,name=conditions,proto3" json:"conditions,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -77,9 +77,9 @@ func (x *CreatePolicyRequest) GetCapabilityId() string {
 	return ""
 }
 
-func (x *CreatePolicyRequest) GetConstraints() *structpb.Struct {
+func (x *CreatePolicyRequest) GetConditions() *structpb.Struct {
 	if x != nil {
-		return x.Constraints
+		return x.Conditions
 	}
 	return nil
 }
@@ -449,11 +449,13 @@ var File_console_proto protoreflect.FileDescriptor
 const file_console_proto_rawDesc = "" +
 	"\n" +
 	"\rconsole.proto\x12\n" +
-	"console.v1\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/protobuf/struct.proto\"\x90\x01\n" +
+	"console.v1\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/protobuf/struct.proto\"\x8e\x01\n" +
 	"\x13CreatePolicyRequest\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12#\n" +
-	"\rcapability_id\x18\x02 \x01(\tR\fcapabilityId\x129\n" +
-	"\vconstraints\x18\x03 \x01(\v2\x17.google.protobuf.StructR\vconstraints\"\x93\x01\n" +
+	"\rcapability_id\x18\x02 \x01(\tR\fcapabilityId\x127\n" +
+	"\n" +
+	"conditions\x18\x03 \x01(\v2\x17.google.protobuf.StructR\n" +
+	"conditions\"\x93\x01\n" +
 	"\x06Policy\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\bagent_id\x18\x02 \x01(\tR\aagentId\x12#\n" +
@@ -515,7 +517,7 @@ var file_console_proto_goTypes = []any{
 	(*emptypb.Empty)(nil),         // 10: google.protobuf.Empty
 }
 var file_console_proto_depIdxs = []int32{
-	8,  // 0: console.v1.CreatePolicyRequest.constraints:type_name -> google.protobuf.Struct
+	8,  // 0: console.v1.CreatePolicyRequest.conditions:type_name -> google.protobuf.Struct
 	9,  // 1: console.v1.Policy.created_at:type_name -> google.protobuf.Timestamp
 	3,  // 2: console.v1.ApprovalList.requests:type_name -> console.v1.ApprovalRequest
 	9,  // 3: console.v1.AnalyticsRequest.from:type_name -> google.protobuf.Timestamp

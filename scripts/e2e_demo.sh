@@ -57,6 +57,35 @@ echo -e "\n[Step 8] Executing DB Query (Internal System)..."
 curl -s -X POST "http://localhost:8080/v1/execute?capability=db.query.execute" \
      -H "X-Agent-ID: data-analyst-agent" \
      -H "X-DevAI-Token: jira.ticket.delete,slack.message.send,db.query.execute,unstable.service" \
-     -d '{"query": "SELECT * FROM balances"}' | jq
+     -d '{"query": "SELECT * FROM balances"}'
+
+# Demo - Динамические поля - "Деньги"
+# Сценарий 1: Успешная транзакция (Сумма ниже лимита)
+curl -X POST http://localhost:8080/v1/execute \
+     -H "Content-Type: application/json" \
+     -H "Authorization: Bearer <ВАШ_ТОКЕН_АВТОРИЗАЦИИ>" \
+     -d '{
+           "capability_id": "bank.transfer.execute",
+           "payload": {
+             "to_account": "DE123456789",
+             "amount": 4999.0,
+             "currency": "EUR"
+           }
+         }'
+# Ожидаемый результат: HTTP 200 OK и ответ от коннектора (имитирующий успешный перевод).
+
+# Сценарий 2: Запрос на подтверждение (Сумма выше лимита)
+curl -X POST http://localhost:8080/v1/execute \
+     -H "Content-Type: application/json" \
+     -H "Authorization: Bearer <ВАШ_ТОКЕН_АВТОРИЗАЦИИ>" \
+     -d '{
+           "capability_id": "bank.transfer.execute",
+           "payload": {
+             "to_account": "DE987654321",
+             "amount": 7500.0,
+             "currency": "EUR"
+           }
+         }'
+# Ожидаемый результат: HTTP 423 Locked (или HTTP 202 Accepted с информацией о статусе), и в консоли появятся логи: DYNAMIC APPROVAL TRIGGERED.
 
 echo -e "\n✅ Demo finished. Check SQL scripts for evidence."
