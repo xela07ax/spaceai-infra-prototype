@@ -64,5 +64,25 @@ docker-compose up -d --build
 Подробный разбор архитектурных решений, структуры БД и логики работы слоев находится здесь:
 * 👉 [Архитектурная документация (docs/README.md)](./docs/README.md)
 
+## Deployment Options
+
+This Gateway is designed to be flexible and scale with your needs.
+
+### 1. Community Edition (Open Source)
+The core engine is open-source and free to use. Ideal for developers, local testing, and small-scale integrations.
+*   **Self-managed:** You handle infrastructure, scaling, and security updates.
+*   **License:** MIT / Apache 2.0 (поставь нужную).
+
+### 2. Managed Gateway (Cloud) — Coming Soon!
+For enterprise-grade reliability and zero-config deployment.
+*   **High Availability:** Managed infrastructure with 99.9% uptime.
+*   **Security & Compliance:** Built-in auditing, PII masking, and RBAC.
+*   **Advanced Analytics:** Detailed dashboards for AI agent performance and cost tracking.
+*   **Global Latency Optimization:** Multi-region deployments.
+
+> [!TIP]
+> Need custom integration or AI architecture consulting? [Contact our team](mailto:xela07ax@gmail.com).
+
+
 ## ⚖️ Лицензия
 Distributed under the Apache 2.0 License.
